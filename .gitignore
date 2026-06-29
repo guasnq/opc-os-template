@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# 看板自动备份（每次改 _首页.md 前备份，不进仓库，避免泄露使用者数据）
+看板/.backups/
+
+# Node
+node_modules/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
