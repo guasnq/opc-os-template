@@ -242,7 +242,11 @@ const NEXT={POOL:'开始写稿 →',WRITING:'送审核 →',REVIEW:'去配音 �
 const SNAME={POOL:'选题池',WRITING:'写稿中',REVIEW:'待审核',VOICE:'待配音',PUBLISH:'待发布',DONE:'已发布'};
 function colOf(s){return s==='DONE'?'PUBLISH':s;}
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-function strip(t){return (t||'').replace(/\[\[([^\]|]+)(\|[^\]]*)?\]\]/g,'$1').replace(/\[([^\]]+)\]\([^)]*\)/g,'$1').trim();}
+function strip(t){return (t||'')
+  .replace(/\[\[([^[\]]*?)\\?\|([^[\]]*?)\]\]/g,'$2')
+  .replace(/\[\[([^[\]]+?)\]\]/g,'$1')
+  .replace(/\[([^\]]+)\]\(([^)]*)\)/g,'$1')
+  .trim();}
 
 let D={pipeline:[],product:[],account:[],data:{xhs:[],wx:[],zh:[],bili:[]}};
 let UI={tab:'pipeline', pipeEditing:null, pipeCreating:false, prodEditing:null, prodCreating:false, accEditing:null, accCreating:false};
@@ -365,6 +369,7 @@ function editRow(kind, it){
         UI.prodEditing=null; UI.prodCreating=false;
       } else {
         const key = body['平台']; if(!key){alert('平台必填');return;}
+        if(!body['账号']){alert('账号必填');return;}
         if(it) await api('account/update',{key:it.key,fields:body}); else await api('account/create',body);
         UI.accEditing=null; UI.accCreating=false;
       }
@@ -389,11 +394,12 @@ function renderAcc(){
 }
 function accRow(it){
   const c=it.cells;
+  const label=[c['平台'],c['账号']].filter(Boolean).join(' / ');
   const tr=mk('tr');
   tr.innerHTML=`<td class="t-name">${esc(c['平台'])}</td><td>${esc(c['账号']||'—')}</td><td>${esc(c['入口']||'—')}</td><td>${esc(c['用途']||'—')}</td><td><div class="row-acts"></div></td>`;
   const acts=tr.querySelector('.row-acts');
   const ed=mk('button','btn ghost sm','编辑'); ed.onclick=()=>{UI.accEditing=it.key;UI.accCreating=false;renderAcc();}; acts.appendChild(ed);
-  const dl=mk('button','btn ghost sm danger','删除'); dl.onclick=()=>{ if(confirm('删除「'+it.key+'」？')) accDel(it.key); }; acts.appendChild(dl);
+  const dl=mk('button','btn ghost sm danger','删除'); dl.onclick=()=>{ if(confirm('删除「'+label+'」？')) accDel(it.key); }; acts.appendChild(dl);
   return tr;
 }
 async function accDel(key){ try{ await api('account/delete',{key}); await loadAll(); }catch(e){alert(e.message);} }

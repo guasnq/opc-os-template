@@ -29,8 +29,9 @@ const path = require('path');
 const { exec } = require('child_process');
 
 const PORT = 47812;
-const HOME = path.resolve(__dirname, '..', '_首页.md');
-const RECAP = path.resolve(__dirname, '..', '05-复盘商业化', '发布复盘.md');
+const ROOT = path.resolve(__dirname, '..');
+const HOME = path.join(ROOT, '_首页.md');
+const RECAP = path.join(ROOT, '05-复盘商业化', '发布复盘.md');
 const HTML = path.join(__dirname, 'board.html');
 const BACKUP = path.join(__dirname, '.backups');
 
@@ -49,7 +50,136 @@ const ACCOUNT_COLS = ['平台', '账号', '入口', '用途'];
 function findHeader(lines, pattern) { for (let i = 0; i < lines.length; i++) if (pattern.test(lines[i])) return i; return -1; }
 function tableEnd(lines, h) { let e = h + 2; while (e < lines.length && lines[e].trim().startsWith('|')) e++; return e; }
 function eolOf(md) { return md.includes('\r\n') ? '\r\n' : '\n'; }
-function colIdx(cols, name) { const i = cols.indexOf(name); return i < 0 ? -1 : i + 1; } // +1 因为 split('|') 首段是空
+function colIdx(cols, name) { const i = cols.indexOf(name); return i < 0 ? -1 : i + 1; } // +1 因为 split 首段是空
+// 按未转义的 | 分割表格行；保留 cell 内的 \|（如 wiki 链接 [[a\|b]]），不拆它
+function splitCells(line) { return line.split(/(?<!\\)\|/); }
+function displayTitle(raw) {
+  const t = String(raw || '').trim();
+  let m = t.match(/\[\[([^[\]]*?)\\?\|([^[\]]*?)\]\]/);
+  if (m) return m[2].trim();
+  m = t.match(/\[\[([^[\]]+?)\]\]/);
+  if (m) return path.basename(m[1].trim(), '.md');
+  m = t.match(/\[([^\]]+)\]\(([^)]*)\)/);
+  if (m) return m[1].trim();
+  return t;
+}
+function wikiLink(relNoExt, title, inTable = false) {
+  return `[[${relNoExt}${inTable ? '\\|' : '|'}${title}]]`;
+}
+function setStatusInText(md, status) {
+  if (/^状态：.*$/m.test(md)) return md.replace(/^状态：.*$/m, '状态：' + status);
+  return md.replace(/(## 基本信息\s*)/, '$1\n状态：' + status + '\n');
+}
+function readTitleFromDoc(file, fallback) {
+  if (!file || !fs.existsSync(file)) return fallback;
+  const md = fs.readFileSync(file, 'utf8');
+  const m = md.match(/^标题：(.+)$/m);
+  return m ? m[1].trim() : fallback;
+}
+function ensureDirFor(file) { fs.mkdirSync(path.dirname(file), { recursive: true }); }
+function relNoExt(file, baseDir) {
+  return path.relative(baseDir, file).replace(/\\/g, '/').replace(/\.md$/, '');
+}
+function moveFile(src, dest) {
+  if (!src || src === dest) return dest;
+  ensureDirFor(dest);
+  if (fs.existsSync(dest)) {
+    if (fs.readFileSync(src, 'utf8') === fs.readFileSync(dest, 'utf8')) {
+      fs.unlinkSync(src);
+      return dest;
+    }
+    throw new Error('目标文件已存在：' + dest);
+  }
+  fs.renameSync(src, dest);
+  return dest;
+}
+function firstExisting(files) { return files.find(f => fs.existsSync(f)); }
+function contentDocPaths(baseDir, title) {
+  return {
+    review: path.join(baseDir, '02-文案生产', '待审核', title + '.md'),
+    approved: path.join(baseDir, '02-文案生产', '已通过', title + '.md'),
+    revise: path.join(baseDir, '02-文案生产', '需要修改', title + '.md'),
+  };
+}
+function syncContentDoc(baseDir, title, stage) {
+  if (!['REVIEW', 'VOICE', 'PUBLISH', 'DONE'].includes(stage)) return null;
+  const files = contentDocPaths(baseDir, title);
+  const target = stage === 'REVIEW' ? files.review : files.approved;
+  const src = firstExisting([target, files.review, files.approved, files.revise]);
+  if (!src) throw new Error('找不到稿件文件：' + title + '.md');
+  moveFile(src, target);
+  fs.writeFileSync(target, setStatusInText(fs.readFileSync(target, 'utf8'), stage === 'REVIEW' ? '待审核' : '已通过'));
+  return { file: target, rel: relNoExt(target, baseDir) };
+}
+function packagePaths(baseDir, title) {
+  return {
+    pending: path.join(baseDir, '03-配音发布包', '待配音', title + '.md'),
+    published: path.join(baseDir, '03-配音发布包', '已发布', title + '.md'),
+  };
+}
+function packageStatus(stage) {
+  return stage === 'DONE' ? '已发布' : stage === 'PUBLISH' ? '待发布' : '待配音';
+}
+function packageMarkdown(title, docTitle, docRel, status) {
+  return `# ${title}发布包
+
+## 内容信息
+
+标题：${docTitle}
+
+状态：${status}
+
+对应文案：${wikiLink(docRel, title)}
+
+## 配音稿
+
+
+## 小红书 / B站发布信息
+
+标题：
+
+简介：
+
+标签：
+
+封面字：
+
+## 公众号发布信息
+
+标题：
+
+摘要：
+
+正文文件：${wikiLink(docRel, title)}
+`;
+}
+function syncPackage(baseDir, title, stage, doc) {
+  if (!['VOICE', 'PUBLISH', 'DONE'].includes(stage)) return null;
+  const files = packagePaths(baseDir, title);
+  const target = stage === 'DONE' ? files.published : files.pending;
+  const src = firstExisting([target, files.pending, files.published]);
+  const status = packageStatus(stage);
+  const docTitle = readTitleFromDoc(doc && doc.file, title);
+  if (src) {
+    moveFile(src, target);
+    fs.writeFileSync(target, setStatusInText(fs.readFileSync(target, 'utf8'), status));
+  } else {
+    ensureDirFor(target);
+    fs.writeFileSync(target, packageMarkdown(title, docTitle, doc.rel, status));
+  }
+  return { file: target };
+}
+function nextTextForStage(stage, fallback) {
+  return { WRITING: '写稿中', REVIEW: '待你审核', VOICE: '待配音', PUBLISH: '待发布', DONE: '已发布' }[stage] || fallback || '备选';
+}
+function syncArtifactsForStage(baseDir, item, stage) {
+  const title = displayTitle(item.title);
+  const doc = syncContentDoc(baseDir, title, stage);
+  syncPackage(baseDir, title, stage, doc);
+  const patch = { next: nextTextForStage(stage, item.next) };
+  if (doc) patch.title = wikiLink(doc.rel, title, true);
+  return patch;
+}
 
 // ===== 选题状态机 =====
 function stageRow(s) {
@@ -77,7 +207,7 @@ function parsePipeline(md) {
   const end = tableEnd(lines, h);
   const items = [];
   for (let i = h + 2; i < end; i++) {
-    const p = lines[i].split('|');
+    const p = splitCells(lines[i]);
     const id = (p[1] || '').trim();
     if (!/^\d+$/.test(id)) continue;
     const title = (p[colIdx(PIPE_COLS, '内容选题')] || '').trim();
@@ -115,7 +245,7 @@ function patchPipelineRow(md, id, patch) {
   const end = tableEnd(lines, h);
   let ok = false;
   for (let i = h + 2; i < end; i++) {
-    const p = lines[i].split('|');
+    const p = splitCells(lines[i]);
     if ((p[1] || '').trim() !== String(id)) continue;
     Object.entries(patch).forEach(([col, val]) => { const ci = colIdx(PIPE_COLS, col); if (ci > 0) p[ci] = ' ' + val + ' '; });
     lines[i] = p.join('|'); ok = true; break;
@@ -125,6 +255,12 @@ function patchPipelineRow(md, id, patch) {
 }
 
 // ===== 简单表（产品/账号）解析/渲染/改 =====
+function simpleRowKey(cols, cells) {
+  if (cols === ACCOUNT_COLS || cols.join('|') === ACCOUNT_COLS.join('|')) {
+    return [cells['平台'], cells['账号']].filter(Boolean).join('::');
+  }
+  return cells[cols[0]];
+}
 function parseSimple(md, header, cols) {
   const lines = md.split(/\r?\n/);
   const h = findHeader(lines, header);
@@ -132,10 +268,10 @@ function parseSimple(md, header, cols) {
   const end = tableEnd(lines, h);
   const items = [];
   for (let i = h + 2; i < end; i++) {
-    const p = lines[i].split('|');
-    const key = (p[1] || '').trim();
-    if (!key || key.startsWith('-')) continue;
+    const p = splitCells(lines[i]);
     const cells = {}; cols.forEach((c, idx) => { cells[c] = (p[idx + 1] || '').trim(); });
+    const key = simpleRowKey(cols, cells);
+    if (!key || key.startsWith('-')) continue;
     items.push({ key, cells });
   }
   return items;
@@ -164,8 +300,9 @@ function patchSimpleRow(md, header, cols, key, patch) {
   const end = tableEnd(lines, h);
   let ok = false;
   for (let i = h + 2; i < end; i++) {
-    const p = lines[i].split('|');
-    if ((p[1] || '').trim() !== String(key)) continue;
+    const p = splitCells(lines[i]);
+    const cells = {}; cols.forEach((c, idx) => { cells[c] = (p[idx + 1] || '').trim(); });
+    if (simpleRowKey(cols, cells) !== String(key)) continue;
     Object.entries(patch).forEach(([col, val]) => { const ci = cols.indexOf(col); if (ci >= 0) p[ci + 1] = ' ' + val + ' '; });
     lines[i] = p.join('|'); ok = true; break;
   }
@@ -188,11 +325,11 @@ function parseRecap(md) {
     let th = -1;
     for (let i = s + 1; i < lines.length; i++) { if (/^##/.test(lines[i])) break; if (/^\|/.test(lines[i])) { th = i; break; } }
     if (th === -1) return;
-    const cols = lines[th].split('|').map(x => x.trim()).filter(Boolean);
+    const cols = splitCells(lines[th]).map(x => x.trim()).filter(Boolean);
     // 数据从 表头+2 开始（跳过分隔行 th+1）
     for (let i = th + 2; i < lines.length; i++) {
       if (!lines[i].trim().startsWith('|')) break;
-      const p = lines[i].split('|').map(x => x.trim());
+      const p = splitCells(lines[i]).map(x => x.trim());
       const cells = {}; cols.forEach((c, idx) => { cells[c] = p[idx + 1] || ''; });
       if (cols.every(c => !cells[c])) continue;
       out[k].push({ cells });
@@ -246,10 +383,14 @@ const srv = http.createServer((req, res) => {
         const idx = STAGES.indexOf(it.stage);
         const ni = Math.max(0, Math.min(STAGES.length - 1, idx + (dir > 0 ? 1 : -1)));
         if (ni === idx) throw new Error('已在边界');
-        const s = stageRow(STAGES[ni]);
+        const nextStage = STAGES[ni];
+        const s = stageRow(nextStage);
+        const artifactPatch = syncArtifactsForStage(ROOT, it, nextStage);
+        const patch = { '选题': s[0], '写稿': s[1], '审核': s[2], '配音': s[3], '发布': s[4], '下一步': artifactPatch.next };
+        if (artifactPatch.title) patch['内容选题'] = artifactPatch.title;
         backup();
-        fs.writeFileSync(HOME, patchPipelineRow(md, id, { '选题': s[0], '写稿': s[1], '审核': s[2], '配音': s[3], '发布': s[4] }));
-        jsend(res, 200, { ok: true, stage: STAGES[ni] });
+        fs.writeFileSync(HOME, patchPipelineRow(md, id, patch));
+        jsend(res, 200, { ok: true, stage: nextStage });
       } catch (e) { jsend(res, 500, { ok: false, error: e.message }); }
     }); return;
   }
@@ -337,10 +478,11 @@ const srv = http.createServer((req, res) => {
   if (m === 'POST' && p === '/api/account/create') {
     readBody(req, res, (fields) => {
       try {
-        const key = (fields['平台'] || '').trim(); if (!key) throw new Error('平台不能为空');
+        const platform = (fields['平台'] || '').trim(); if (!platform) throw new Error('平台不能为空');
+        const account = (fields['账号'] || '').trim(); if (!account) throw new Error('账号不能为空');
         const md = readFile(HOME);
         const items = parseSimple(md, ACCOUNT_HEADER, ACCOUNT_COLS);
-        items.push({ key, cells: fields });
+        items.push({ key: platform + '::' + account, cells: fields });
         backup(); fs.writeFileSync(HOME, rewriteSimple(md, ACCOUNT_HEADER, ACCOUNT_COLS, items));
         jsend(res, 200, { ok: true });
       } catch (e) { jsend(res, 500, { ok: false, error: e.message }); }
